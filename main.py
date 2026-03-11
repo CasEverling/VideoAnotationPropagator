@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 
 from typing import Iterable, List, Optional
 
@@ -21,7 +22,7 @@ class MyApp(App):
         self.frames: list[SegmentedImage] = []
 
         n = 0
-        while self.cap.isOpened() and n < 10:
+        while self.cap.isOpened() and n < 100:
             n += 1
             _, frame = self.cap.read()
 
@@ -63,6 +64,9 @@ class MyApp(App):
         self.button.text = "Propagating to video"
         propagator = SegmentationPropagator()
 
+        # Create output folder if it doesn't exist
+        os.makedirs("output", exist_ok=True)
+
         picker_mask = self.segmentation_picker.mask
         base_frame = SegmentedImage(
             self.segmentation_picker.original_image,
@@ -89,11 +93,14 @@ class MyApp(App):
             "output.mp4",
             cv2.VideoWriter_fourcc(*'mp4v'),
             self.cap.get(cv2.CAP_PROP_FPS),
-            (marked_frames[0].img.shape[1], marked_frames[0].img.shape[0])  # ✅ (width, height)
+            (marked_frames[0].img.shape[1], marked_frames[0].img.shape[0])
         )
 
-        for frame in processed_frames:
-            video.write(frame.get_masked_image())
+        for i, frame in enumerate(processed_frames):
+            masked_image = frame.get_masked_image()
+            video.write(masked_image)
+            # Save each frame as a PNG to the output folder
+            cv2.imwrite(f"output/frame_{i:04d}.png", masked_image)
 
         video.release()
         self.button.text = "Video Saved"
