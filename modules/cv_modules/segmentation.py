@@ -5,8 +5,8 @@ from collections import deque
 class RegionGrowing:
     """Implements region growing segmentation with multi-click support"""
     
-    DEFAULT_COLOR_THRESHOLD = 20
-    DEFAULT_GRAY_THRESHOLD = 15
+    DEFAULT_COLOR_THRESHOLD = 40
+    DEFAULT_GRAY_THRESHOLD = 20
     DEFAULT_MORPH_KERNEL = 5
     
     def __init__(self):
@@ -104,7 +104,7 @@ class RegionGrowing:
 
         # pass threshold directly to the region growing
         mask = self.region_grow_multi_seed(img, self.seeds, threshold)
-
+        
         if smooth:
             mask = self.smooth_mask(mask)
 

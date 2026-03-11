@@ -6,191 +6,97 @@ from typing import Iterable, List, Optional
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.metrics import dp
+
+import threading
 
 from mobileapp.my_widgets.segmentation_picker import SegmentationPicker
 from modules.cv_modules.propagation import SegmentationPropagator
 from modules.cv_modules.segmented_image import SegmentedImage
+from modules.cv_modules.segmentation import RegionGrowing
 
-def picker_to_segmented_image(picker: SegmentationPicker) -> SegmentedImage:
-    original = picker.original_image.copy()
-    points = list(picker.points)
-
-    if not points:
-        raise ValueError("No seed points selected.")
-
-    result = picker.segmenter.segment(original, points)
-
-    if isinstance(result, SegmentedImage):
-        return result
-
-    score_mask = None
-
-    if isinstance(result, tuple):
-        first = result[0]
-        second = result[1] if len(result) > 1 else None
-
-        if isinstance(first, SegmentedImage):
-            return first
-
-        if isinstance(first, np.ndarray) and len(first.shape) == 2:
-            return SegmentedImage(
-                img=original,
-                mask=(first > 0).astype(np.uint8),
-                score_mask=second if isinstance(second, np.ndarray) else None
-            )
-
-        if (
-            isinstance(first, np.ndarray)
-            and len(first.shape) == 3
-            and isinstance(second, np.ndarray)
-            and len(second.shape) == 2
-        ):
-            return SegmentedImage(
-                img=first,
-                mask=(second > 0).astype(np.uint8),
-                score_mask=None
-            )
-
-        result = first
-
-    if isinstance(result, np.ndarray) and len(result.shape) == 2:
-        return SegmentedImage(
-            img=original,
-            mask=(result > 0).astype(np.uint8),
-            score_mask=None
-        )
-
-    raise TypeError(f"Cannot convert segmentation result of type {type(result)} to SegmentedImage")
-
-
-def load_video_frames(video_path: str) -> List[np.ndarray]:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError(f"Could not open video: {video_path}")
-
-    frames: List[np.ndarray] = []
-
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frames.append(frame)
-
-    cap.release()
-
-    if not frames:
-        raise ValueError(f"Video contains no readable frames: {video_path}")
-
-    return frames
-
-
-def _extract_mask_from_segmentation_result(
-    result,
-    original_image: np.ndarray
-) -> np.ndarray:
-    """
-    Converts the output of RegionGrowing into a binary mask.
-
-    Supported possibilities:
-    - np.ndarray mask with shape (H, W)
-    - np.ndarray BGR image with same shape as original
-    - SegmentedImage
-    """
-    if isinstance(result, SegmentedImage):
-        return result.mask.astype(np.uint8)
-
-    if not isinstance(result, np.ndarray):
-        raise TypeError(
-            "RegionGrowing returned an unsupported type. "
-            "Expected np.ndarray or SegmentedImage."
-        )
-
-    # Case 1: already a single-channel mask
-    if len(result.shape) == 2:
-        return (result > 0).astype(np.uint8)
-
-    # Case 2: returned an image instead of a mask
-    # Infer the mask by comparing against the original image
-    if result.shape == original_image.shape:
-        diff = np.any(result != original_image, axis=2)
-        return diff.astype(np.uint8)
-
-    raise ValueError(
-        "Could not infer mask from RegionGrowing output. "
-        f"Got shape {result.shape}, expected either "
-        f"(H, W) or {original_image.shape}."
-    )
-
-
-def picker_to_segmented_image(picker: SegmentationPicker) -> SegmentedImage:
-    """
-    Builds a SegmentedImage from the current state of SegmentationPicker
-    without modifying SegmentationPicker itself.
-    """
-    if not hasattr(picker, "original_image"):
-        raise AttributeError("SegmentationPicker must expose 'original_image'.")
-
-    if not hasattr(picker, "selected_points"):
-        raise AttributeError("SegmentationPicker must expose 'selected_points'.")
-
-    if not hasattr(picker, "segmenter"):
-        raise AttributeError("SegmentationPicker must expose 'segmenter'.")
-
-    original = picker.original_image.copy()
-    points = list(picker.selected_points)
-
-    if not points:
-        raise ValueError("No seed points were selected in the SegmentationPicker.")
-
-    result = picker.segmenter.segment(original, points)
-    mask = _extract_mask_from_segmentation_result(result, original)
-
-    return SegmentedImage(
-        img=original,
-        mask=mask,
-        score_mask=None
-    )
-
-
-class VideoSegmentationRoot(BoxLayout):
-    def __init__(self, video_path: str = "input.mp4", **kwargs):
-        super().__init__(orientation="vertical", **kwargs)
-
-        self.video_path = video_path
-        self.frames = load_video_frames(video_path)
-
-        self.base_frame = self.frames[0]
-        self.remaining_frames = self.frames[1:]
-
-        self.propagator = SegmentationPropagator()
-        self.results: Optional[List[SegmentedImage]] = None
-
-        self.picker = SegmentationPicker(image=self.base_frame)
-
-        self.run_button = Button(
-            text="Propagate segmentation through video",
-            size_hint=(1, None),
-            height=60
-        )
-        self.run_button.bind(on_press=self.on_run_pressed)
-
-        self.add_widget(self.picker)
-        self.add_widget(self.run_button)
-
-    def on_run_pressed(self, *args):
-        base_segmented = picker_to_segmented_image(self.picker)
-
-        self.results = self.propagator.propagate_video(
-            base_frame=base_segmented,
-            frames=self.remaining_frames
-        )
-
-        print(f"Propagation finished. Generated {len(self.results)} segmented frames.")
-
-
-class VideoSegmentationApp(App):
+class MyApp(App):
     def build(self):
-        return VideoSegmentationRoot(video_path="input.mp4")
+        self.cap = cv2.VideoCapture('input.mp4')
+        self.frames: list[SegmentedImage] = []
+
+        n = 0
+        while self.cap.isOpened() and n < 10:
+            n += 1
+            _, frame = self.cap.read()
+
+            if frame is None:
+                break
+                
+            self.frames.append(
+                SegmentedImage(frame)
+                )
+            
+        self.cap.release()
+
+        if (len(self.frames) == 0):
+            raise Exception("Video not found")
+
+        self.layout = BoxLayout(orientation = "vertical")
+        self.segmentation_picker = SegmentationPicker(
+            image = self.frames[0].img
+        )
+        self.button = Button(
+            text = "Propagate to video",
+            on_press = self.make_video
+            )
+        self.button.size_hint_y = None
+        self.button.height = dp(50)
+
+        self.layout.add_widget(self.segmentation_picker)
+        self.layout.add_widget(self.button)
+        
+        return self.layout
     
+    def make_video(self, *args, **kwgars):
+        threading.Thread(
+            target = self.make_video_worker, args=(self,)
+        ).start()
+
+    def make_video_worker(self, *args, **kwargs):
+        mask_duration = 2
+        self.button.text = "Propagating to video"
+        propagator = SegmentationPropagator()
+
+        picker_mask = self.segmentation_picker.mask
+        base_frame = SegmentedImage(
+            self.segmentation_picker.original_image,
+            picker_mask,
+            picker_mask.astype(np.float32) 
+        )
+
+        marked_frames = propagator.propagate_video(
+            base_frame, [frame.img for frame in self.frames[::mask_duration]]
+        )
+
+        processed_frames: list[SegmentedImage] = []
+        for n, frame in enumerate(self.frames):
+            chunk = marked_frames[n // mask_duration] 
+            processed_frames.append(
+                SegmentedImage(
+                    frame.img,
+                    chunk.mask,
+                    chunk.mask.astype(np.float32)
+                )
+            )
+
+        video = cv2.VideoWriter(
+            "output.mp4",
+            cv2.VideoWriter_fourcc(*'mp4v'),
+            self.cap.get(cv2.CAP_PROP_FPS),
+            (marked_frames[0].img.shape[1], marked_frames[0].img.shape[0])  # ✅ (width, height)
+        )
+
+        for frame in processed_frames:
+            video.write(frame.get_masked_image())
+
+        video.release()
+        self.button.text = "Video Saved"
+
 if __name__ == "__main__":
-    VideoSegmentationApp().run()
+    MyApp().run()

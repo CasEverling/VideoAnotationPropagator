@@ -25,16 +25,21 @@ from kivy.graphics.texture import Texture
 
 
 class SegmentationPicker(Widget):
-    def __init__(self, image_path: str, **kwargs):
+    points = []
+    def __init__(self, image_path: str = None, image = None, **kwargs):
         super().__init__(**kwargs)
 
-        self.original_image = cv2.imread(image_path)
-        if self.original_image is None:
-            raise ValueError(f"Could not load image: {image_path}")
+        if image_path:
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Could not load image: {image_path}")
+        self.original_image = image
 
         self.display_image = self.original_image.copy()
         self.segmenter = RegionGrowing()
         self.points = []
+
+        self.mask = np.zeros(self.original_image.shape, np.int8)
 
         self.img_h, self.img_w = self.display_image.shape[:2]
 
@@ -156,18 +161,20 @@ class SegmentationPicker(Widget):
         if not self.points:
             return
 
-        result = self.segmenter.segment(self.original_image, self.points)
+        self.segmenter.clear_seeds()
+        for px, py in self.points:
+            self.segmenter.add_seed(px, py)
 
-        if len(result.shape) == 2:
-            overlay = self.original_image.copy()
-            overlay[result > 0] = (0, 255, 0)
+        mask, contour = self.segmenter.segment(self.original_image)
+        self.mask = mask
 
-            for px, py in self.points:
-                cv2.circle(overlay, (px, py), 5, (0, 0, 255), -1)
 
-            self.display_image = overlay
-        else:
-            self.display_image = result
+        overlay = self.segmenter.create_overlay(self.original_image, mask, alpha=0.5, color=(0, 255, 0))
+
+        for px, py in self.points:
+            cv2.circle(overlay, (int(px), int(py)), 5, (0, 0, 255), -1)
+
+        self.display_image = overlay
 
     def on_touch_down(self, touch):
         coords = self.widget_to_image_coords(touch.x, touch.y)
@@ -175,6 +182,19 @@ class SegmentationPicker(Widget):
             return super().on_touch_down(touch)
 
         self.points.append(coords)
+
+        print(self.points)
+
         self.run_segmentation()
         self.render()
         return True
+    
+    def get_segmented_result(self) -> SegmentedImage:
+        if self.mask is None:
+            h, w = self.original_image.shape[:2]
+            mask_to_return = np.zeros((h, w), dtype=np.uint8)
+        else:
+            mask_to_return = self.mask
+
+        # Cria e retorna a instância do objeto
+        return SegmentedImage(self.original_image, mask_to_return)

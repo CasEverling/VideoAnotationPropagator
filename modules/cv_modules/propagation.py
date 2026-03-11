@@ -129,7 +129,8 @@ class SegmentationPropagator:
         results = [base_frame]
         prev = base_frame
 
-        for frame in frames:
+        for n, frame in enumerate(frames):
+            print(f"Processed frame {n}")
             prev = self.propagate(prev, frame)
             results.append(prev)
 
